@@ -1,0 +1,30 @@
+# File thực thi và thư viện động/tĩnh
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# File đối tượng trung gian trong quá trình compile
+*.o
+*.obj
+
+# Thư mục build của CMake / Make
+build/
+bin/
+out/
+cmake-build-*/
+.cache/
+
+# File metadata của IDE / Editor
+.vscode/
+.idea/
+*.sln
+*.vcxproj*
+
+# File log, dump
+*.log
+*.dmp

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 #include "Types.hpp"
@@ -16,6 +17,8 @@ enum class Reason : uint8_t {
     CANCEL_ACCEPTED,
     CANCEL_FAILED,
     NOTHING_TO_MODIFY,
+    INSUFFICIENT_LIQUIDITY,
+    PRICE_OUT_OF_BAND
 };
 
 struct Trade {
@@ -28,7 +31,7 @@ struct Trade {
 };
 
 struct Outcome {
-    Reason reason;
+    Reason reason = Reason::ACCEPTED;
     uint64_t quantity_rested = 0;
     uint64_t quantity_filled = 0;
     uint64_t assigned_id = 0;    
@@ -36,7 +39,7 @@ struct Outcome {
 };
 
 struct Outcome2 {
-    Reason reason;
+    Reason reason = Reason::ACCEPTED;
     uint64_t assigned_id = 0;
 };
 
@@ -45,8 +48,22 @@ struct OrderLocation {
     Side side;
 };
 
+template <Side S>
+struct SideTraits;
 
+template <>
+struct SideTraits<Side::BUY> {
+    static bool is_price_crossed(uint64_t incoming_price, uint64_t book_price) {
+        return incoming_price >= book_price;
+    }
+};
 
+template <>
+struct SideTraits<Side::SELL> {
+    static bool is_price_crossed(uint64_t incoming_price, uint64_t book_price) {
+        return incoming_price <= book_price;
+    }
+};
 
 class OrderBook {
 public:
@@ -55,6 +72,7 @@ public:
     Outcome2 cancel_id(uint64_t resting);
     Outcome2 modify_order(uint64_t id, uint64_t size);
     Outcome2 modify_price(uint64_t id, uint64_t price);
+
     bool has_best_bid() const {
         return !bids.empty();
     }
@@ -68,72 +86,79 @@ public:
         return asks.begin()->first;
     }
 
-    inline Outcome add_order(Order incoming) {
+    bool validate_order(const Order& order, const InstrumentConfig& config) const {
+        if (order.price < config.min_price || order.price > config.max_price) {
+            return false;
+        }
+        if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
+            return false;
+        }
+        if (order.price % config.tick_size != 0) {
+            return false;
+        }
+        return true;
+    }
+
+    template <Side S>
+    inline Outcome add_order(Order& incoming) {
+        if (!validate_order(incoming, instrumentConfig_)) {
+            Outcome outcome;
+            outcome.reason = Reason::PRICE_OUT_OF_BAND;
+            return outcome;
+        }
+        using Traits = SideTraits<S>;
+
         Outcome outcome;
+        incoming.status = OrderStatus::NEW;
         outcome.assigned_id = incoming.orderId;
-        if (incoming.side == Side::BUY) {
-            while (!asks.empty() && (incoming.price == OrderType::MARKET || asks.begin()->first <= incoming.price) && incoming.remainingQuantity > 0) {
-                uint64_t bestAskPrice = asks.begin()->first;
-                Order &bestAskOrder = asks[bestAskPrice].front();
-                uint32_t matchedQuantity = std::min(incoming.remainingQuantity, bestAskOrder.remainingQuantity);
-                outcome.quantity_filled += matchedQuantity;
-                Trade trade;
-                trade.tradeId = tradeIdCounter_++;
-                trade.makerOrderId = bestAskOrder.orderId;
-                trade.takerOrderId = incoming.orderId;
-                trade.price = bestAskPrice;
-                trade.quantity = matchedQuantity;
-                trade.timestamp = rdtsc(); // Assuming you have a function to get the current timestamp
-                incoming.remainingQuantity -= matchedQuantity;
-                bestAskOrder.remainingQuantity -= matchedQuantity;
-                outcome.trades.push_back(trade);
-                if (bestAskOrder.remainingQuantity == 0) {
-                    orderLookup_.erase(bestAskOrder.orderId);s
-                    asks[bestAskPrice].pop_front();
-                    if (asks[bestAskPrice].empty()) {
-                        asks.erase(bestAskPrice);
-                    }
-                }
-            }
-            if (incoming.OrderType == OrderType::LIMIT && incoming.remainingQuantity > 0) {
-                bids[incoming.price].push_back(incoming);
-                orderLookup_[incoming.orderId] = {incoming.price, Side::BUY};
-            } else if (incoming.remainingQuantity > 0 && incoming.type == OrderType::MARKET) {
-                cancel_id(incoming.orderId);
-            }
-        } else {
-            while (!bids.empty() && bids.begin()->first >= incoming.price && incoming.remainingQuantity > 0) {
-                uint64_t bestBidPrice = bids.begin()->first;
-                Order &bestBidOrder = bids[bestBidPrice].front();
-                uint32_t matchedQuantity = std::min(incoming.remainingQuantity, bestBidOrder.remainingQuantity);
-                outcome.quantity_filled += matchedQuantity;
-                Trade trade;
-                trade.tradeId = tradeIdCounter_++;
-                trade.makerOrderId = bestBidOrder.orderId;
-                trade.takerOrderId = incoming.orderId;
-                trade.price = bestBidPrice;
-                trade.quantity = matchedQuantity;
-                trade.timestamp = rdtsc(); // Assuming you have a function to get the current timestamp
-                incoming.remainingQuantity -= matchedQuantity;
-                bestBidOrder.remainingQuantity -= matchedQuantity;
-                outcome.trades.push_back(trade);
-                if (bestBidOrder.remainingQuantity == 0) {
-                    bids[bestBidPrice].pop_front();
-                    if (bids[bestBidPrice].empty()) {
-                        bids.erase(bestBidPrice);
-                    }
-                }
-            }
-            if (incoming.OrderType == OrderType::LIMIT && incoming.remainingQuantity > 0) {
-                orderLookup_.erase(bestBidOrder.orderId);
-                asks[incoming.price].push_back(incoming);
-                orderLookup_[incoming.orderId] = {incoming.price, Side::SELL};
-            } else if (incoming.remainingQuantity > 0 && incoming.type == OrderType::MARKET) {
-                cancel_id(incoming.orderId);
+        if (incoming.type == OrderType::MARKET) {
+            if (S == Side::SELL) {
+                incoming.price = 0; 
+            } else {
+                incoming.price = UINT64_MAX;
             }
         }
+        auto& book = (S == Side::BUY) ? asks : bids;
+        
+        while (!book.empty() && Traits::is_price_crossed(incoming.price, book.begin()->first) && incoming.remainingQuantity > 0) {
+            uint64_t bestPrice = book.begin()->first;
+            Order &bestOrder = book[bestPrice].front();
+            uint32_t matchedQuantity = std::min(incoming.remainingQuantity, bestOrder.remainingQuantity);
+            incoming.executedQuantity += matchedQuantity;
+            incoming.quantity_filled += matchedQuantity;
+            Trade trade;
+            trade.tradeId = tradeIdCounter_++;
+            trade.makerOrderId = bestOrder.orderId;
+            trade.takerOrderId = incoming.orderId;
+            trade.price = bestPrice;
+            trade.quantity = matchedQuantity;
+            trade.timestamp = rdtsc(); 
+            incoming.remainingQuantity -= matchedQuantity;
+            bestOrder.remainingQuantity -= matchedQuantity;
+            outcome.trades.push_back(trade);
+            if (bestOrder.remainingQuantity == 0) {
+                orderLookup_.erase(bestOrder.orderId);
+                book[bestPrice].pop_front();
+                if (book[bestPrice].empty()) {
+                    book.erase(bestPrice);
+                }
+            }
+        }
+        if (incoming.remainingQuantity == 0) {
+            incoming.status = OrderStatus::FILLED;
+        } else if (incoming.executedQuantity > 0) {
+            incoming.status = OrderStatus::PARTIALLY_FILLED;
+        }
+        if (incoming.type == OrderType::LIMIT && incoming.remainingQuantity > 0) {
+            book[incoming.price].push_back(incoming);
+            orderLookup_[incoming.orderId] = {incoming.price, S};
+        } else if (incoming.remainingQuantity > 0 && incoming.type == OrderType::MARKET) {
+            outcome.reason = Reason::INSUFFICIENT_LIQUIDITY;
+        } 
         outcome.quantity_rested = incoming.remainingQuantity;
-        outcome.reason = Reason::ACCEPTED;
+        if (incoming.type == OrderType::MARKET && incoming.remainingQuantity > 0) {
+            outcome.quantity_rested = 0;
+        }
         return outcome;
     }
 
@@ -142,4 +167,5 @@ private:
     std::map<uint64_t, std::deque<Order>, std::greater<uint64_t>> bids;
     std::map<uint64_t, std::deque<Order>> asks;
     std::unordered_map<uint64_t, OrderLocation> orderLookup_;
+    InstrumentConfig instrumentConfig_;
 };
