@@ -28,3 +28,5 @@ cmake-build-*/
 # File log, dump
 *.log
 *.dmp
+
+*.md
