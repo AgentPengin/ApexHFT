@@ -31,3 +31,4 @@ cmake-build-*/
 *.dmp
 
 TEACHER.md
+STATUS.md
