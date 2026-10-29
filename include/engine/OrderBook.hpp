@@ -18,7 +18,9 @@ enum class Reason : uint8_t {
     CANCEL_FAILED,
     NOTHING_TO_MODIFY,
     INSUFFICIENT_LIQUIDITY,
-    PRICE_OUT_OF_BAND
+    PRICE_OUT_OF_BAND,
+    INVALID_QUANTITY,
+    EXPIRED
 };
 
 struct Trade {
@@ -68,10 +70,40 @@ struct SideTraits<Side::SELL> {
 class OrderBook {
 public:
     OrderBook() = default;
-    uint64_t get_order_count() const;
-    Outcome2 cancel_id(uint64_t resting);
-    Outcome2 modify_order(uint64_t id, uint64_t size);
-    Outcome2 modify_price(uint64_t id, uint64_t price);
+
+    // void append_order(PriceLevel& level, uint32_t order_idx, OrderPool<1'000'000>& pool) {
+    //     Order& order = pool.get(order_idx);
+    //     order.prev_order = level.tail_order;
+
+    //     order.next_order = NULL_INDEX;
+
+    //     if (level.tail_order != NULL_INDEX) {
+    //         pool.get(level.tail_order).next_order = order_idx;
+    //     } else {
+    //         level.head_order = order_idx;
+    //     }
+    //     level.tail_order = order_idx;
+    //     level.total_volume += order.quantity;
+    //     level.order_count++;
+    // }
+
+    // void remove_order(PriceLevel& level, uint32_t order_idx, OrderPool<1'000'000>& pool) {
+    //     Order& order = pool.get(order_idx);
+    //     if (order.prev_order != NULL_INDEX) {
+    //         pool.get(order.prev_order).next_order = order.next_order;
+    //     } else {
+    //         level.head_order = order.next_order;
+    //     }
+
+    //     if (order.next_order != NULL_INDEX) {
+    //         pool.get(order.next_order).prev_order = order.prev_order;
+    //     } else {
+    //         level.tail_order = order.prev_order;
+    //     }
+    //     level.total_volume -= order.quantity;
+    //     level.order_count--;
+    //     pool.release(order_idx);
+    // }
 
     bool has_best_bid() const {
         return !bids.empty();
@@ -85,76 +117,154 @@ public:
     uint64_t get_best_ask() const {
         return asks.begin()->first;
     }
+    bool check_invariants() const {
+        if (!bids.empty() && !asks.empty()) {
+            if (bids.begin()->first >= asks.begin()->first) {
+                return false;
+            }
+        } 
+        for (const auto& [price, orders] : bids) {
+            if (orders.empty()) return false;
+            for (const auto& order : orders) {
+                if (order.quantity == 0 || order.price != price || (order.quantity != order.remainingQuantity + order.executedQuantity)) {
+                    return false;
+                }
+            }
+        }
+        for (const auto& [price, orders] : asks) {
+            if (orders.empty()) return false;
+            for (const auto& order : orders) {
+                if (order.quantity == 0 || order.price != price || (order.quantity != order.remainingQuantity + order.executedQuantity)) {
+                    return false;
+                }
+            }
+        }
+        size_t total_orders_in_book = 0;
+        for (const auto& [price, orders] : bids) total_orders_in_book += orders.size();
+        for (const auto& [price, orders] : asks) total_orders_in_book += orders.size();
 
-    bool validate_order(const Order& order, const InstrumentConfig& config) const {
-        if (order.price < config.min_price || order.price > config.max_price) {
-            return false;
-        }
-        if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
-            return false;
-        }
-        if (order.price % config.tick_size != 0) {
+        if (total_orders_in_book != orderLookup_.size()) {
             return false;
         }
         return true;
     }
 
+    Outcome2 cancel_id(uint64_t id) {
+        Outcome2 outcome;
+        outcome.assigned_id = id;
+        outcome.reason = Reason::CANCEL_FAILED;
+        auto it = orderLookup_.find(id);
+        if (it == orderLookup_.end()) return outcome;
+        const OrderLocation& loc = it->second;
+        auto cancel_from_book = [&](auto& book) {
+            auto price_it = book.find(loc.price);
+            if (price_it == book.end()) return;
+            auto& orders = price_it->second;
+            for (auto order_it = orders.begin(); order_it != orders.end(); ++order_it) {
+                if (order_it->orderId == id) {
+                    orders.erase(order_it);
+                    if (orders.empty()) {
+                        book.erase(price_it);
+                    }
+                    orderLookup_.erase(it);
+                    outcome.reason = Reason::CANCEL_ACCEPTED;
+                    return;
+                }
+            }
+        };
+        if (loc.side == Side::BUY) {
+            cancel_from_book(bids);
+        } else {
+            cancel_from_book(asks);
+        }
+        return outcome;
+    }
+    
+    Reason validate_order(const Order& order, const InstrumentConfig& config) const {
+        if (order.type != OrderType::MARKET) {
+            if (order.price < config.min_price || order.price > config.max_price) return Reason::PRICE_OUT_OF_BAND;
+            if (order.price % config.tick_size != 0) return Reason::PRICE_OUT_OF_BAND;
+        }
+        if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
+            return Reason::INVALID_QUANTITY;
+        }
+        return Reason::ACCEPTED;
+    }
+
     template <Side S>
     inline Outcome add_order(Order& incoming) {
-        if (!validate_order(incoming, instrumentConfig_)) {
-            Outcome outcome;
-            outcome.reason = Reason::PRICE_OUT_OF_BAND;
+        Outcome outcome;
+        outcome.assigned_id = incoming.orderId;
+        Reason r = validate_order(incoming, instrumentConfig_);
+        
+        if (r != Reason::ACCEPTED) {
+            outcome.reason = r;
             return outcome;
         }
         using Traits = SideTraits<S>;
-
-        Outcome outcome;
         incoming.status = OrderStatus::NEW;
-        outcome.assigned_id = incoming.orderId;
+        uint64_t limitPrice = incoming.price;
+
         if (incoming.type == OrderType::MARKET) {
-            if (S == Side::SELL) {
-                incoming.price = 0; 
-            } else {
-                incoming.price = UINT64_MAX;
-            }
+            if (S == Side::SELL) limitPrice = 0;
+            else limitPrice = UINT64_MAX;
         }
-        auto& book = (S == Side::BUY) ? asks : bids;
-        
-        while (!book.empty() && Traits::is_price_crossed(incoming.price, book.begin()->first) && incoming.remainingQuantity > 0) {
-            uint64_t bestPrice = book.begin()->first;
-            Order &bestOrder = book[bestPrice].front();
-            uint32_t matchedQuantity = std::min(incoming.remainingQuantity, bestOrder.remainingQuantity);
-            incoming.executedQuantity += matchedQuantity;
-            incoming.quantity_filled += matchedQuantity;
-            Trade trade;
-            trade.tradeId = tradeIdCounter_++;
-            trade.makerOrderId = bestOrder.orderId;
-            trade.takerOrderId = incoming.orderId;
-            trade.price = bestPrice;
-            trade.quantity = matchedQuantity;
-            trade.timestamp = rdtsc(); 
-            incoming.remainingQuantity -= matchedQuantity;
-            bestOrder.remainingQuantity -= matchedQuantity;
-            outcome.trades.push_back(trade);
-            if (bestOrder.remainingQuantity == 0) {
-                orderLookup_.erase(bestOrder.orderId);
-                book[bestPrice].pop_front();
-                if (book[bestPrice].empty()) {
-                    book.erase(bestPrice);
+        auto match_and_rest = [&](auto& match_book, auto& rest_book) {
+            while (!match_book.empty() && 
+                (incoming.type == OrderType::MARKET || Traits::is_price_crossed(limitPrice, match_book.begin()->first)) && 
+                incoming.remainingQuantity > 0) 
+            {
+                uint64_t bestPrice = match_book.begin()->first;
+                Order &bestOrder = match_book[bestPrice].front();
+                uint32_t matchedQuantity = std::min(incoming.remainingQuantity, bestOrder.remainingQuantity);
+                
+                incoming.executedQuantity += matchedQuantity;
+                outcome.quantity_filled += matchedQuantity;
+                
+                Trade trade;
+                trade.tradeId = tradeIdCounter_++;
+                trade.makerOrderId = bestOrder.orderId;
+                trade.takerOrderId = incoming.orderId;
+                trade.price = bestPrice;
+                trade.quantity = matchedQuantity;
+                trade.timestamp = rdtsc(); 
+                
+                incoming.remainingQuantity -= matchedQuantity;
+                bestOrder.remainingQuantity -= matchedQuantity;
+                bestOrder.executedQuantity += matchedQuantity;
+                bestOrder.status = (bestOrder.remainingQuantity == 0) ? OrderStatus::FILLED : OrderStatus::PARTIALLY_FILLED;
+                
+                outcome.trades.push_back(trade);
+                
+                if (bestOrder.remainingQuantity == 0) {
+                    orderLookup_.erase(bestOrder.orderId);
+                    match_book[bestPrice].pop_front();
+                    if (match_book[bestPrice].empty()) {
+                        match_book.erase(bestPrice);
+                    }
                 }
             }
+            if (incoming.remainingQuantity == 0) {
+                incoming.status = OrderStatus::FILLED;
+            } else if (incoming.executedQuantity > 0) {
+                if (incoming.type == OrderType::MARKET) {
+                    outcome.reason = Reason::EXPIRED;
+                } else incoming.status = OrderStatus::PARTIALLY_FILLED;
+            }
+
+            if (incoming.type == OrderType::LIMIT && incoming.remainingQuantity > 0) {
+                rest_book[limitPrice].push_back(incoming);
+                orderLookup_[incoming.orderId] = {limitPrice, S};
+            } else if (incoming.remainingQuantity > 0 && incoming.type == OrderType::MARKET) {
+                outcome.reason = Reason::INSUFFICIENT_LIQUIDITY;
+            }
+        };
+        if constexpr (S == Side::BUY) {
+            match_and_rest(asks, bids); 
+        } else {
+            match_and_rest(bids, asks); 
         }
-        if (incoming.remainingQuantity == 0) {
-            incoming.status = OrderStatus::FILLED;
-        } else if (incoming.executedQuantity > 0) {
-            incoming.status = OrderStatus::PARTIALLY_FILLED;
-        }
-        if (incoming.type == OrderType::LIMIT && incoming.remainingQuantity > 0) {
-            book[incoming.price].push_back(incoming);
-            orderLookup_[incoming.orderId] = {incoming.price, S};
-        } else if (incoming.remainingQuantity > 0 && incoming.type == OrderType::MARKET) {
-            outcome.reason = Reason::INSUFFICIENT_LIQUIDITY;
-        } 
+
         outcome.quantity_rested = incoming.remainingQuantity;
         if (incoming.type == OrderType::MARKET && incoming.remainingQuantity > 0) {
             outcome.quantity_rested = 0;
@@ -162,10 +272,18 @@ public:
         return outcome;
     }
 
+    inline Outcome add_order(Order& incoming) {
+        if (incoming.side == Side::BUY) {
+            return add_order<Side::BUY>(incoming);
+        } else {
+            return add_order<Side::SELL>(incoming);
+        }
+    }
+
 private:
     uint64_t tradeIdCounter_{1};
     std::map<uint64_t, std::deque<Order>, std::greater<uint64_t>> bids;
     std::map<uint64_t, std::deque<Order>> asks;
     std::unordered_map<uint64_t, OrderLocation> orderLookup_;
-    InstrumentConfig instrumentConfig_;
+    InstrumentConfig instrumentConfig_{1, 1, 1, 1'000'000, 1, 1'000'000, 0};
 };

@@ -14,6 +14,7 @@
 
 # Thư mục build của CMake / Make
 build/
+build-*/
 bin/
 out/
 cmake-build-*/
@@ -29,4 +30,4 @@ cmake-build-*/
 *.log
 *.dmp
 
-*.md
+TEACHER.md
