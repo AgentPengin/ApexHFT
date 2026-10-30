@@ -20,7 +20,8 @@ enum class Reason : uint8_t {
     INSUFFICIENT_LIQUIDITY,
     PRICE_OUT_OF_BAND,
     INVALID_QUANTITY,
-    EXPIRED
+    EXPIRED,
+    INSUFFICIENT_MEMORY
 };
 
 struct Trade {
@@ -37,7 +38,7 @@ struct Outcome {
     uint64_t quantity_rested = 0;
     uint64_t quantity_filled = 0;
     uint64_t assigned_id = 0;    
-    std::vector<Trade> trades;
+    FixedVector<Trade, 16> trades; // Giới hạn số lượng giao dịch được ghi lại cho mỗi lệnh
 };
 
 struct Outcome2 {
@@ -69,41 +70,8 @@ struct SideTraits<Side::SELL> {
 
 class OrderBook {
 public:
-    OrderBook() = default;
-
-    // void append_order(PriceLevel& level, uint32_t order_idx, OrderPool<1'000'000>& pool) {
-    //     Order& order = pool.get(order_idx);
-    //     order.prev_order = level.tail_order;
-
-    //     order.next_order = NULL_INDEX;
-
-    //     if (level.tail_order != NULL_INDEX) {
-    //         pool.get(level.tail_order).next_order = order_idx;
-    //     } else {
-    //         level.head_order = order_idx;
-    //     }
-    //     level.tail_order = order_idx;
-    //     level.total_volume += order.quantity;
-    //     level.order_count++;
-    // }
-
-    // void remove_order(PriceLevel& level, uint32_t order_idx, OrderPool<1'000'000>& pool) {
-    //     Order& order = pool.get(order_idx);
-    //     if (order.prev_order != NULL_INDEX) {
-    //         pool.get(order.prev_order).next_order = order.next_order;
-    //     } else {
-    //         level.head_order = order.next_order;
-    //     }
-
-    //     if (order.next_order != NULL_INDEX) {
-    //         pool.get(order.next_order).prev_order = order.prev_order;
-    //     } else {
-    //         level.tail_order = order.prev_order;
-    //     }
-    //     level.total_volume -= order.quantity;
-    //     level.order_count--;
-    //     pool.release(order_idx);
-    // }
+    OrderBook(uint64_t min_price = 1, uint64_t tick_size = 1, uint64_t max_price = 4000)
+        : instrumentConfig_{1, tick_size, min_price, max_price, 1, 1'000'000, 0} {}
 
     bool has_best_bid() const {
         return !bids.empty();
@@ -247,9 +215,8 @@ public:
             if (incoming.remainingQuantity == 0) {
                 incoming.status = OrderStatus::FILLED;
             } else if (incoming.executedQuantity > 0) {
-                if (incoming.type == OrderType::MARKET) {
-                    outcome.reason = Reason::EXPIRED;
-                } else incoming.status = OrderStatus::PARTIALLY_FILLED;
+                if (incoming.type == OrderType::LIMIT) 
+                    incoming.status = OrderStatus::PARTIALLY_FILLED;
             }
 
             if (incoming.type == OrderType::LIMIT && incoming.remainingQuantity > 0) {
@@ -285,5 +252,5 @@ private:
     std::map<uint64_t, std::deque<Order>, std::greater<uint64_t>> bids;
     std::map<uint64_t, std::deque<Order>> asks;
     std::unordered_map<uint64_t, OrderLocation> orderLookup_;
-    InstrumentConfig instrumentConfig_{1, 1, 1, 1'000'000, 1, 1'000'000, 0};
+    InstrumentConfig instrumentConfig_;
 };
