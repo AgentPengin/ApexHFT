@@ -7,6 +7,7 @@
 #include <vector>
 #include "Types.hpp"
 #include "TimeStamp.hpp"
+#include "FixedVector.hpp"
 
 // ask là bán, bid là mua
 

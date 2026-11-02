@@ -6,6 +6,9 @@
 #include "DenseBook.hpp"
 #include "TimeStamp.hpp"
 #include "OrderBook.hpp"
+#include "OrderPool.hpp"
+#include "FixedVector.hpp"
+#include "FlatHashMap.hpp"
 
 static constexpr uint64_t INVALID_PRICE = 0; // Hoặc std::numeric_limits<uint64_t>::max()
 
@@ -58,10 +61,10 @@ public:
         outcome.assigned_id = id;
         outcome.reason = Reason::CANCEL_FAILED;
         
-        auto it = orderLookup_.find(id);
-        if (it == orderLookup_.end()) return outcome;
+        uint32_t order_idx = NULL_INDEX;
+        uint32_t order_val = 0;
+        if (!orderLookup_.erase(id, order_idx)) return outcome;
 
-        uint32_t order_idx = it->second;
         Order& order = pool_->get(order_idx);
         uint64_t price = order.price;
 
@@ -79,7 +82,6 @@ public:
                 asks_.deactivate_level(price);
             }
         }
-        orderLookup_.erase(it);
         outcome.reason = Reason::CANCEL_ACCEPTED;
         return outcome;
     }
@@ -167,7 +169,7 @@ public:
                     PriceLevel& level = rest_book.get_level(incoming.price);
                     append_order(level, new_idx);
                     rest_book.activate_level(incoming.price);
-                    orderLookup_[incoming.orderId] = new_idx;
+                    orderLookup_.put(incoming.orderId, new_idx);
                 }  else {
                     outcome.reason = Reason::INSUFFICIENT_MEMORY;
                     incoming.status = OrderStatus::REJECTED;
@@ -209,6 +211,6 @@ private:
     std::unique_ptr<OrderPool<MAX_ORDERS>> pool_;
     DenseBook<MAX_TICKS> bids_;
     DenseBook<MAX_TICKS> asks_;
-    std::unordered_map<uint64_t, uint32_t> orderLookup_;
+    FlatHashMap<131'072> orderLookup_;
     InstrumentConfig instrumentConfig_;
 };
