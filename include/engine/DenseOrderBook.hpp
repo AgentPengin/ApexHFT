@@ -14,11 +14,11 @@ static constexpr uint64_t INVALID_PRICE = 0; // Hoặc std::numeric_limits<uint6
 
 class DenseOrderBook {
 public:
-    static constexpr size_t MAX_ORDERS = 1'000'000;
+    static constexpr size_t MAX_POOL_SIZE = 65'536; // 2^16
     static constexpr size_t MAX_TICKS = 4096;
 
     DenseOrderBook(uint64_t min_price = 1, uint64_t tick_size = 1, uint64_t max_price = 4000) 
-        : pool_(std::make_unique<OrderPool<MAX_ORDERS>>()),
+        : pool_(std::make_unique<OrderPool<MAX_POOL_SIZE>>()),
           bids_(min_price, tick_size), 
           asks_(min_price, tick_size),
           instrumentConfig_{1, tick_size, min_price, max_price, 1, 1'000'000, 0} {}
@@ -62,7 +62,6 @@ public:
         outcome.reason = Reason::CANCEL_FAILED;
         
         uint32_t order_idx = NULL_INDEX;
-        uint32_t order_val = 0;
         if (!orderLookup_.erase(id, order_idx)) return outcome;
 
         Order& order = pool_->get(order_idx);
@@ -94,6 +93,9 @@ public:
         if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
             return Reason::INVALID_QUANTITY;
         }
+        if (order.orderId == 0) {
+            return Reason::INVALID_ORDER_ID;
+        }
         return Reason::ACCEPTED;
     }
 
@@ -106,7 +108,6 @@ public:
             outcome.reason = r;
             return outcome;
         }
-        using Traits = SideTraits<S>;
         incoming.status = OrderStatus::NEW;
         uint64_t limitPrice = incoming.price;
         if (incoming.type == OrderType::MARKET) {
@@ -163,16 +164,19 @@ public:
             }
             if (incoming.type == OrderType::LIMIT && incoming.remainingQuantity > 0) {
                 uint32_t new_idx = pool_->acquire();
-                if (new_idx != NULL_INDEX) {
+                if (new_idx == NULL_INDEX) {
+                    outcome.reason = Reason::INSUFFICIENT_MEMORY;
+                    incoming.status = OrderStatus::REJECTED;
+                } else if (!orderLookup_.put(incoming.orderId, new_idx)) {
+                    pool_->release(new_idx);
+                    outcome.reason = Reason::INSUFFICIENT_MEMORY;
+                    incoming.status = OrderStatus::REJECTED;
+                } else {
                     Order& rested = pool_->get(new_idx);
                     rested = incoming;
                     PriceLevel& level = rest_book.get_level(incoming.price);
                     append_order(level, new_idx);
                     rest_book.activate_level(incoming.price);
-                    orderLookup_.put(incoming.orderId, new_idx);
-                }  else {
-                    outcome.reason = Reason::INSUFFICIENT_MEMORY;
-                    incoming.status = OrderStatus::REJECTED;
                 }
             }
         };
@@ -182,7 +186,8 @@ public:
             match_and_rest(bids_, asks_); 
         }
 
-        outcome.quantity_rested = incoming.remainingQuantity;
+        if (incoming.status != OrderStatus::REJECTED) outcome.quantity_rested = incoming.remainingQuantity;
+
         if (incoming.type == OrderType::MARKET && incoming.remainingQuantity > 0) {
             outcome.quantity_rested = 0;
         }
@@ -208,7 +213,7 @@ public:
 
 private:
     uint64_t tradeIdCounter_{1};
-    std::unique_ptr<OrderPool<MAX_ORDERS>> pool_;
+    std::unique_ptr<OrderPool<MAX_POOL_SIZE>> pool_;
     DenseBook<MAX_TICKS> bids_;
     DenseBook<MAX_TICKS> asks_;
     FlatHashMap<131'072> orderLookup_;

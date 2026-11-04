@@ -22,7 +22,8 @@ enum class Reason : uint8_t {
     PRICE_OUT_OF_BAND,
     INVALID_QUANTITY,
     EXPIRED,
-    INSUFFICIENT_MEMORY
+    INSUFFICIENT_MEMORY,
+    INVALID_ORDER_ID,
 };
 
 struct Trade {
@@ -154,6 +155,9 @@ public:
             if (order.price < config.min_price || order.price > config.max_price) return Reason::PRICE_OUT_OF_BAND;
             if (order.price % config.tick_size != 0) return Reason::PRICE_OUT_OF_BAND;
         }
+        if (order.orderId == 0) {
+            return Reason::INVALID_ORDER_ID;
+        }
         if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
             return Reason::INVALID_QUANTITY;
         }
@@ -213,13 +217,14 @@ public:
                     }
                 }
             }
-            if (incoming.remainingQuantity == 0) {
+             if (incoming.remainingQuantity == 0) {
                 incoming.status = OrderStatus::FILLED;
+            } else if (incoming.type == OrderType::MARKET) {
+                incoming.status = OrderStatus::EXPIRED;
+                outcome.reason = (incoming.executedQuantity > 0) ? Reason::EXPIRED : Reason::INSUFFICIENT_LIQUIDITY;
             } else if (incoming.executedQuantity > 0) {
-                if (incoming.type == OrderType::LIMIT) 
-                    incoming.status = OrderStatus::PARTIALLY_FILLED;
+                incoming.status = OrderStatus::PARTIALLY_FILLED;
             }
-
             if (incoming.type == OrderType::LIMIT && incoming.remainingQuantity > 0) {
                 rest_book[limitPrice].push_back(incoming);
                 orderLookup_[incoming.orderId] = {limitPrice, S};

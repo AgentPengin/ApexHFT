@@ -72,6 +72,7 @@ function(apex_add_test target source)
 endfunction()
 
 apex_add_test(test_orderbook tests/test_orderbook.cpp)
+apex_add_test(test_differential tests/test_differential.cpp)
 
 # ---------------------------------------------------------------------------
 # Benchmarks

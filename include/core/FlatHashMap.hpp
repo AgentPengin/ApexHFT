@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <memory>
 #include <algorithm>
+#include <bit>
 
 template <size_t Capacity = 131'072> // 128K slots = 2MB (Nằm trọn trong L3 Cache!)
 class FlatHashMap {
@@ -18,11 +19,15 @@ private:
     std::unique_ptr<Entry[]> table_;
     size_t size_{0};
 
+    static constexpr size_t shift_ = 64 - (std::bit_width(Capacity) - 1);
+
     static inline size_t hash_fn(uint64_t key) {
-        return static_cast<size_t>((key * 11400714819323198485ULL) >> 47); // 64 - 17 = 47
+        return static_cast<size_t>((key * 11400714819323198485ULL) >> shift_); 
     }
 
 public:
+    static constexpr size_t MAX_LOAD = (Capacity * 3) / 4; // 75% load factor
+
     FlatHashMap() : table_(std::make_unique<Entry[]>(Capacity)) {
         clear();
     }
@@ -32,20 +37,28 @@ public:
         size_ = 0;
     }
 
-    inline void put(uint64_t key, uint32_t val) {
-        if (key == EMPTY_KEY) return;
-        size_t idx = hash_fn(key) & (Capacity - 1);
+
+    inline bool put(uint64_t key, uint32_t val) {
+        if (key == EMPTY_KEY) return false;
+        size_t idx = hash_fn(key);
+        size_t probes = 0;
         while (table_[idx].key != EMPTY_KEY && table_[idx].key != key) {
             idx = (idx + 1) & (Capacity - 1);
+            if (++probes >= 64) return false;
         }
-        if (table_[idx].key == EMPTY_KEY) ++size_;
+        if (table_[idx].key == EMPTY_KEY) {
+            if (size_ >= MAX_LOAD) return false; // Hash table is too full
+            ++size_;
+        }
         table_[idx].key = key;
         table_[idx].val = val;
+        return true;
+    
     }
 
     inline bool find(uint64_t key, uint32_t& out_val) const {
         if (key == EMPTY_KEY) return false;
-        size_t idx = hash_fn(key) & (Capacity - 1);
+        size_t idx = hash_fn(key);
         while (table_[idx].key != EMPTY_KEY) {
             if (table_[idx].key == key) {
                 out_val = table_[idx].val;
@@ -58,7 +71,7 @@ public:
 
     inline bool erase(uint64_t key, uint32_t& out_val) {
         if (key == EMPTY_KEY) return false;
-        size_t i = hash_fn(key) & (Capacity - 1);
+        size_t i = hash_fn(key);
         while (table_[i].key != EMPTY_KEY) {
             if (table_[i].key == key) {
                 out_val = table_[i].val;
