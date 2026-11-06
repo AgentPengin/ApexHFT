@@ -7,11 +7,14 @@ class FixedVector {
 private:
     T data_[Capacity];
     size_t size_{0};
+    bool overflowed{false};
 public:
     FixedVector() = default;
     void push_back(const T& item) {
         if (size_ < Capacity) {
             data_[size_++] = item;
+        } else {
+            overflowed = true;
         }
     }
     size_t size() const { return size_; }

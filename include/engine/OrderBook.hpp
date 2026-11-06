@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
+#include <stdexcept>
 #include "Types.hpp"
 #include "TimeStamp.hpp"
 #include "FixedVector.hpp"
@@ -40,7 +41,7 @@ struct Outcome {
     uint64_t quantity_rested = 0;
     uint64_t quantity_filled = 0;
     uint64_t assigned_id = 0;    
-    FixedVector<Trade, 16> trades; // Giới hạn số lượng giao dịch được ghi lại cho mỗi lệnh
+    FixedVector<Trade, 32> trades; // Giới hạn số lượng giao dịch được ghi lại cho mỗi lệnh
 };
 
 struct Outcome2 {
@@ -72,8 +73,27 @@ struct SideTraits<Side::SELL> {
 
 class OrderBook {
 public:
+    static constexpr size_t MAX_TICKS = 4096;
     OrderBook(uint64_t min_price = 1, uint64_t tick_size = 1, uint64_t max_price = 4000)
-        : instrumentConfig_{1, tick_size, min_price, max_price, 1, 1'000'000, 0} {}
+        : instrumentConfig_{1, tick_size, min_price, max_price, 1, 1'000'000, 0} {
+            if (tick_size == 0) {
+            throw std::invalid_argument("tick_size must be > 0");
+        }
+        if (min_price > max_price) {
+            throw std::invalid_argument("min_price must be <= max_price");
+        }
+        if ((max_price - min_price) % tick_size != 0) {
+            throw std::invalid_argument(
+                "Price range must be divisible by tick_size"
+            );
+        }
+        if ((max_price - min_price) / tick_size >= MAX_TICKS) {
+            throw std::invalid_argument(
+                "Price range exceeds MAX_TICKS capacity"
+            );
+        }
+
+        }
 
     bool has_best_bid() const {
         return !bids.empty();
@@ -153,12 +173,15 @@ public:
     Reason validate_order(const Order& order, const InstrumentConfig& config) const {
         if (order.type != OrderType::MARKET) {
             if (order.price < config.min_price || order.price > config.max_price) return Reason::PRICE_OUT_OF_BAND;
-            if (order.price % config.tick_size != 0) return Reason::PRICE_OUT_OF_BAND;
+            if ((order.price - config.min_price) % config.tick_size != 0) return Reason::PRICE_OUT_OF_BAND;
+        }
+        if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
+            return Reason::INVALID_QUANTITY;
         }
         if (order.orderId == 0) {
             return Reason::INVALID_ORDER_ID;
         }
-        if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
+        if (order.remainingQuantity != order.quantity - order.executedQuantity) {
             return Reason::INVALID_QUANTITY;
         }
         return Reason::ACCEPTED;
@@ -225,12 +248,11 @@ public:
             } else if (incoming.executedQuantity > 0) {
                 incoming.status = OrderStatus::PARTIALLY_FILLED;
             }
+
             if (incoming.type == OrderType::LIMIT && incoming.remainingQuantity > 0) {
                 rest_book[limitPrice].push_back(incoming);
                 orderLookup_[incoming.orderId] = {limitPrice, S};
-            } else if (incoming.remainingQuantity > 0 && incoming.type == OrderType::MARKET) {
-                outcome.reason = Reason::INSUFFICIENT_LIQUIDITY;
-            }
+            } 
         };
         if constexpr (S == Side::BUY) {
             match_and_rest(asks, bids); 

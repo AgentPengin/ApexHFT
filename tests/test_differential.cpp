@@ -1,10 +1,7 @@
-#include <iostream>
 #include <vector>
-#include <algorithm>
-#include <chrono>
 #include <random>
-#include <iomanip>
 #include <cassert>
+#include <iostream>
 #include "OrderBook.hpp"
 #include "Types.hpp"
 #include "TimeStamp.hpp"
@@ -13,112 +10,160 @@
 using namespace std;
 
 constexpr size_t NUM_OPERATIONS = 1'000'000;
-vector<uint64_t> order_ids;
-vector<uint32_t> order_ids2;
-mt19937_64 rng(42);
 
-void process_order(DenseOrderBook& book, OrderBook& baseline_book, size_t i) {
-    uint32_t op_type = rng() % 100;
-    uint64_t price = 950 + (rng() % 100); // [950, 1050)
-    uint64_t quantity = 10 + (rng() % 50); // [10, 50)
-    Side side = (rng() % 2 == 0) ? Side::BUY : Side::SELL;
+enum class Kind {
+    CANCEL,
+    MARKET,
+    LIMIT
+};
 
-    Outcome dense_outcome;
-    Outcome2 dense_outcome2;
-    Outcome baseline_outcome;
-    Outcome2 baseline_outcome2;
+struct Operation {
+    Kind kind;
+    uint64_t id;
+    Side side;
+    uint64_t price;
+    uint32_t quantity;
+    uint64_t cancel_id;
+};
 
-    if (op_type < 20 && !order_ids.empty()) { // 20% chance to cancel
-        size_t idx = rng() % order_ids.size();
-        uint64_t cancel_id = order_ids[idx];
-        dense_outcome2 = book.cancel_id(cancel_id);
-        order_ids[idx] = order_ids.back();
-        order_ids.pop_back();
-    } else if (op_type < 50) {
-        // 30% chance to add a market order
-        Order mkt{};
-        mkt.orderId = i;
-        mkt.price = 0;
-        mkt.quantity = quantity;
-        mkt.remainingQuantity = quantity;
-        mkt.side = side;
-        mkt.type = OrderType::MARKET;
-        dense_outcome = book.add_order(mkt); 
-    } else {
-        // 50% chance to add a limit order
-        Order limit{};
-        limit.orderId = i;
-        limit.price = price;
-        limit.quantity = quantity;
-        limit.remainingQuantity = quantity;
-        limit.side = side;
-        limit.type = OrderType::LIMIT;
-        dense_outcome = book.add_order(limit);
-        if (dense_outcome.quantity_rested > 0) {
+struct Step {
+    Outcome outcome;
+    OrderStatus status;
+    uint64_t best_bid;
+    uint64_t best_ask;
+};
+
+[[noreturn]] void fail(const char* field, size_t index,
+                       const Operation& op, uint64_t seed,
+                       long long a, long long b) {
+    std::cerr << "Mismatch in field [" << field << "] at index " << index << "\n"
+              << "  Expected: " << a << ", Got: " << b << "\n"
+              << "  Seed: " << seed << "\n"
+              << "  Operation: (kind=" << static_cast<int>(op.kind) 
+              << ", id=" << op.id 
+              << ", price=" << op.price 
+              << ", quantity=" << op.quantity << ")\n";
+    std::abort();
+}
+
+#define CHECK_EQ(field, index, op, seed, va, vb) \
+    do { if (!((va) == (vb))) fail(#field, index, op, seed, (va), (vb)); } while (0)
+
+vector<Operation> generate(uint64_t seed, size_t N) {
+    vector<uint64_t> order_ids;
+    mt19937_64 rng(seed);
+    vector<Operation> ops;
+    ops.reserve(N);
+    
+    for (size_t i = 1; i <= N; ++i) {
+        uint32_t op_type = rng() % 100;
+        uint64_t price = 950 + (rng() % 100); // [950, 1050)
+        uint32_t quantity = 10 + (rng() % 50); // [10, 50)
+        Side side = (rng() % 2 == 0) ? Side::BUY : Side::SELL;
+
+        if (op_type < 20 && !order_ids.empty()) { // 20% chance to cancel
+            size_t idx = rng() % order_ids.size();
+            uint64_t cancel_id = order_ids[idx];
+            ops.push_back({Kind::CANCEL, i, side, price, quantity, cancel_id});
+            order_ids[idx] = order_ids.back();
+            order_ids.pop_back();
+        } else if (op_type < 50) {
+            // 30% chance to add a market order
+            ops.push_back({Kind::MARKET, i, side, price, quantity, 0});
+        } else {
+            // 50% chance to add a limit order
+            ops.push_back({Kind::LIMIT, i, side, price, quantity, 0});
             order_ids.push_back(i);
         }
     }
+    return ops;
+}
 
+Step apply_op(auto& book, const Operation& op) {
+    Outcome outcome;
+    Outcome2 outcome2;
+    OrderStatus status = OrderStatus::NEW;
 
-    if (op_type < 20 && !order_ids2.empty()) { // 20% chance to cancel
-        size_t idx = rng() % order_ids2.size();
-        uint64_t cancel_id = order_ids2[idx];
-        baseline_outcome2 = baseline_book.cancel_id(cancel_id);
-        order_ids2[idx] = order_ids2.back();
-        order_ids2.pop_back();
-    } else if (op_type < 50) {
-        // 30% chance to add a market order
+    if (op.kind == Kind::CANCEL) {
+        outcome2 = book.cancel_id(op.cancel_id);
+    } else if (op.kind == Kind::MARKET) {
         Order mkt{};
-        mkt.orderId = i;
+        mkt.orderId = op.id;
         mkt.price = 0;
-        mkt.quantity = quantity;
-        mkt.remainingQuantity = quantity;
-        mkt.side = side;
+        mkt.quantity = op.quantity;
+        mkt.remainingQuantity = op.quantity;
+        mkt.side = op.side;
         mkt.type = OrderType::MARKET;
-        baseline_outcome = baseline_book.add_order(mkt); 
-    } else {
+        outcome = book.add_order(mkt); 
+        status = mkt.status;
+    } else if (op.kind == Kind::LIMIT) {
         // 50% chance to add a limit order
         Order limit{};
-        limit.orderId = i;
-        limit.price = price;
-        limit.quantity = quantity;
-        limit.remainingQuantity = quantity;
-        limit.side = side;
+        limit.orderId = op.id;
+        limit.price = op.price;
+        limit.quantity = op.quantity;
+        limit.remainingQuantity = op.quantity;
+        limit.side = op.side;
         limit.type = OrderType::LIMIT;
-        baseline_outcome = baseline_book.add_order(limit);
-        if (baseline_outcome.quantity_rested > 0) {
-            order_ids2.push_back(i);
-        }
+        outcome = book.add_order(limit);
+        status = limit.status;
     }
-    assert(dense_outcome.reason == baseline_outcome.reason);
-    assert(dense_outcome2.reason == baseline_outcome2.reason);
-    if (op_type >= 20) {
-        assert(dense_outcome.quantity_rested == baseline_outcome.quantity_rested);
-        assert(dense_outcome.quantity_filled == baseline_outcome.quantity_filled);
-        assert(dense_outcome.trades.size() == baseline_outcome.trades.size());
-        for (size_t j = 0; j < dense_outcome.trades.size(); ++j) {
-            const Trade& dense_trade = dense_outcome.trades[j];
-            const Trade& baseline_trade = baseline_outcome.trades[j];
-            assert(dense_trade.tradeId == baseline_trade.tradeId);
-            assert(dense_trade.makerOrderId == baseline_trade.makerOrderId);
-            assert(dense_trade.takerOrderId == baseline_trade.takerOrderId);
-            assert(dense_trade.price == baseline_trade.price);
-            assert(dense_trade.quantity == baseline_trade.quantity);
-        }
+    if (op.kind == Kind::CANCEL) {
+        outcome.reason = outcome2.reason;
     }
-    assert(book.get_best_ask() == baseline_book.get_best_ask());
-    assert(book.get_best_bid() == baseline_book.get_best_bid());
+    Step step;
+    step.outcome = outcome;
+    step.status = status;
+    step.best_bid = book.has_best_bid() ? book.get_best_bid() : 0;
+    step.best_ask = book.has_best_ask() ? book.get_best_ask() : 0;
+    return step;
+}
+
+void CHECK(const Step& a, const Step& b, size_t index, const Operation& op, uint64_t seed) {
+    CHECK_EQ(reason, index, op, seed, 
+             static_cast<long long>(a.outcome.reason), 
+             static_cast<long long>(b.outcome.reason));
+             
+    CHECK_EQ(status, index, op, seed, 
+             static_cast<long long>(a.status), 
+             static_cast<long long>(b.status));
+
+    CHECK_EQ(assigned_id, index, op, seed, a.outcome.assigned_id, b.outcome.assigned_id);
+    CHECK_EQ(quantity_rested, index, op, seed, a.outcome.quantity_rested, b.outcome.quantity_rested);
+    CHECK_EQ(quantity_filled, index, op, seed, a.outcome.quantity_filled, b.outcome.quantity_filled);
+    
+    CHECK_EQ(trades_count, index, op, seed, a.outcome.trades.size(), b.outcome.trades.size());
+    
+    for (size_t t = 0; t < a.outcome.trades.size(); ++t) {
+        const auto& trade_a = a.outcome.trades[t];
+        const auto& trade_b = b.outcome.trades[t];
+        
+        CHECK_EQ(trade_price, index, op, seed, trade_a.price, trade_b.price);
+        CHECK_EQ(trade_quantity, index, op, seed, trade_a.quantity, trade_b.quantity);
+        CHECK_EQ(trade_maker_id, index, op, seed, trade_a.makerOrderId, trade_b.makerOrderId);
+        CHECK_EQ(trade_taker_id, index, op, seed, trade_a.takerOrderId, trade_b.takerOrderId);
+        CHECK_EQ(trade_trade_id, index, op, seed, trade_a.tradeId, trade_b.tradeId);    
+    }
+
+    CHECK_EQ(best_bid, index, op, seed, a.best_bid, b.best_bid);
+    CHECK_EQ(best_ask, index, op, seed, a.best_ask, b.best_ask);
 }
 
 int main() {
-    DenseOrderBook book;
-    OrderBook baseline_book;
-    order_ids.reserve(NUM_OPERATIONS);
-    order_ids2.reserve(NUM_OPERATIONS);
+    DenseOrderBook dense;
+    OrderBook base;
+    size_t N = NUM_OPERATIONS;
+    uint64_t seed = 42;
+    vector<Operation> script = generate(seed, N);
 
-    for (size_t i = 1; i <= NUM_OPERATIONS; ++i) {
-        process_order(book, baseline_book, i);
+    for (size_t i = 0; i < script.size(); ++i) {
+        const auto& op = script[i];
+        Step step_dense = apply_op(dense, op);
+        Step step_base = apply_op(base, op);
+    
+        CHECK(step_dense, step_base, i, op, seed);
     }
 
+    cerr << "PASS: " << N << " ops, seed=" << seed << endl;
     return 0;
 }

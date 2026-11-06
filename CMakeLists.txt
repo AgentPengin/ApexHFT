@@ -86,3 +86,9 @@ if(APEX_BUILD_BENCHMARKS)
     apex_add_bench(benchmark_ringbuffer tests/benchmark_ringbuffer.cpp)
     apex_add_bench(benchmark_orderbook  tests/benchmark_orderbook.cpp)
 endif()
+
+# ---------------------------------------------------------------------------
+# Simulator
+# ---------------------------------------------------------------------------
+add_executable(simulator src/simulator.cpp)
+target_link_libraries(simulator PRIVATE apex_core)

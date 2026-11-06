@@ -99,5 +99,10 @@ public:
         return erase(key, dummy);
     }
 
+    inline bool find(uint64_t key) const {
+        uint32_t dummy = 0;
+        return find(key, dummy);
+    }
+
     size_t size() const { return size_; }
 };

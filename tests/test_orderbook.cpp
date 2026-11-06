@@ -128,7 +128,7 @@ int main() {
     Outcome outcome11 = orderBook.add_order(marketBuyOrder4);
     assert(outcome11.trades.size() == 1);
     assert(outcome11.quantity_filled == 5);
-    assert(outcome11.reason == Reason::INSUFFICIENT_LIQUIDITY);
+    assert(outcome11.reason == Reason::EXPIRED);
     cout << "Test 11: Market Order with Insufficient Liquidity - PASSED" << endl;
 
 }

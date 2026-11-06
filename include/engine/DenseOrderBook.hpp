@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <stdexcept>
 #include "Types.hpp"
 #include "DenseBook.hpp"
 #include "TimeStamp.hpp"
@@ -13,21 +14,44 @@
 static constexpr uint64_t INVALID_PRICE = 0; // Hoặc std::numeric_limits<uint64_t>::max()
 
 class DenseOrderBook {
-public:
+    public:
     static constexpr size_t MAX_POOL_SIZE = 65'536; // 2^16
     static constexpr size_t MAX_TICKS = 4096;
-
+    
+    
     DenseOrderBook(uint64_t min_price = 1, uint64_t tick_size = 1, uint64_t max_price = 4000) 
-        : pool_(std::make_unique<OrderPool<MAX_POOL_SIZE>>()),
-          bids_(min_price, tick_size), 
-          asks_(min_price, tick_size),
-          instrumentConfig_{1, tick_size, min_price, max_price, 1, 1'000'000, 0} {}
+    : pool_(std::make_unique<OrderPool<MAX_POOL_SIZE>>()),
+    bids_(min_price, tick_size), 
+    asks_(min_price, tick_size),
+    instrumentConfig_{1, tick_size, min_price, max_price, 1, 1'000'000, 0} {
+        if (tick_size == 0) {
+            throw std::invalid_argument("tick_size must be > 0");
+        }
+        if (min_price > max_price) {
+            throw std::invalid_argument("min_price must be <= max_price");
+        }
+        if ((max_price - min_price) % tick_size != 0) {
+            throw std::invalid_argument(
+                "Price range must be divisible by tick_size"
+            );
+        }
+        if ((max_price - min_price) / tick_size >= MAX_TICKS) {
+            throw std::invalid_argument(
+                "Price range exceeds MAX_TICKS capacity"
+            );
+        }
+        if (max_price > INT64_MAX) {
+            throw std::invalid_argument(
+                "max_price must be <= INT64_MAX"
+            );
+        }
+    }
 
     void append_order(PriceLevel& level, uint32_t order_idx) {
         Order& order = pool_ -> get(order_idx);
         order.prev_order = level.tail_order;
         order.next_order = NULL_INDEX;
-
+        
         if (level.tail_order != NULL_INDEX) {
             pool_ -> get(level.tail_order).next_order = order_idx;
         } else {
@@ -37,7 +61,7 @@ public:
         level.total_volume += order.remainingQuantity;
         level.order_count++;
     }
-
+    
     void remove_order(PriceLevel& level, uint32_t order_idx) {
         Order& order = pool_ ->get(order_idx);
         if (order.prev_order != NULL_INDEX) {
@@ -45,7 +69,7 @@ public:
         } else {
             level.head_order = order.next_order;
         }
-
+        
         if (order.next_order != NULL_INDEX) {
             pool_ -> get(order.next_order).prev_order = order.prev_order;
         } else {
@@ -55,7 +79,7 @@ public:
         level.order_count--;
         pool_ -> release(order_idx);
     }
-
+    
     Outcome2 cancel_id(uint64_t id) {
         Outcome2 outcome;
         outcome.assigned_id = id;
@@ -63,11 +87,11 @@ public:
         
         uint32_t order_idx = NULL_INDEX;
         if (!orderLookup_.erase(id, order_idx)) return outcome;
-
+        
         Order& order = pool_->get(order_idx);
         uint64_t price = order.price;
-
-
+        
+        
         if (order.side == Side::BUY) {
             PriceLevel& level = bids_.get_level(order.price);
             remove_order(level, order_idx);
@@ -84,11 +108,11 @@ public:
         outcome.reason = Reason::CANCEL_ACCEPTED;
         return outcome;
     }
-
+    
     Reason validate_order(const Order& order, const InstrumentConfig& config) const {
         if (order.type != OrderType::MARKET) {
             if (order.price < config.min_price || order.price > config.max_price) return Reason::PRICE_OUT_OF_BAND;
-            if (order.price % config.tick_size != 0) return Reason::PRICE_OUT_OF_BAND;
+            if ((order.price - config.min_price) % config.tick_size != 0) return Reason::PRICE_OUT_OF_BAND;
         }
         if (order.quantity < config.min_quantity || order.quantity > config.max_quantity) {
             return Reason::INVALID_QUANTITY;
@@ -96,11 +120,20 @@ public:
         if (order.orderId == 0) {
             return Reason::INVALID_ORDER_ID;
         }
+        if (order.remainingQuantity != order.quantity - order.executedQuantity) {
+            return Reason::INVALID_QUANTITY;
+        }
         return Reason::ACCEPTED;
     }
-
+    
     template <Side S>
     inline Outcome add_order(Order& incoming) {
+        if (orderLookup_.find(incoming.orderId)) {
+            Outcome outcome;
+            outcome.assigned_id = incoming.orderId;
+            outcome.reason = Reason::INVALID_ORDER_ID;
+            return outcome;
+        }
         Outcome outcome;
         outcome.assigned_id = incoming.orderId;
         Reason r = validate_order(incoming, instrumentConfig_);
@@ -113,7 +146,7 @@ public:
         if (incoming.type == OrderType::MARKET) {
             limitPrice = (S == Side::SELL) ? 0 : UINT64_MAX;
         }
-
+        
         auto match_and_rest = [&](auto& match_book, auto& rest_book) {
             auto get_best_match_price = [&]() -> int64_t {
                 if constexpr (S == Side::BUY) {
@@ -127,14 +160,14 @@ public:
             while (best_match != -1 && 
                 SideTraits<S>::is_price_crossed(limitPrice, static_cast<uint64_t>(best_match)) && 
                 incoming.remainingQuantity > 0) 
-            {
-                uint64_t bestPrice = static_cast<uint64_t>(best_match);
-                PriceLevel& level = match_book.get_level(bestPrice);
-
-
-
-                uint32_t maker_idx = level.head_order;
-                Order& bestOrder = pool_->get(maker_idx);
+                {
+                    uint64_t bestPrice = static_cast<uint64_t>(best_match);
+                    PriceLevel& level = match_book.get_level(bestPrice);
+                    
+                    
+                    
+                    uint32_t maker_idx = level.head_order;
+                    Order& bestOrder = pool_->get(maker_idx);
                 uint32_t matchedQuantity = std::min(incoming.remainingQuantity, bestOrder.remainingQuantity);
                 incoming.executedQuantity += matchedQuantity;
                 outcome.quantity_filled += matchedQuantity;
@@ -185,9 +218,9 @@ public:
         } else {
             match_and_rest(bids_, asks_); 
         }
-
+        
         if (incoming.status != OrderStatus::REJECTED) outcome.quantity_rested = incoming.remainingQuantity;
-
+        
         if (incoming.type == OrderType::MARKET && incoming.remainingQuantity > 0) {
             outcome.quantity_rested = 0;
         }
@@ -197,8 +230,8 @@ public:
         if (incoming.side == Side::BUY) return add_order<Side::BUY>(incoming);
         return add_order<Side::SELL>(incoming);
     }
-
-
+    
+    
     bool has_best_bid() const { return bids_.get_best_bid() != -1; }
     bool has_best_ask() const { return asks_.get_best_ask() != -1; }
     uint64_t get_best_bid() const { 
@@ -209,8 +242,8 @@ public:
         if (!has_best_ask()) return INVALID_PRICE;
         return static_cast<uint64_t>(asks_.get_best_ask()); 
     }
-
-
+    
+    
 private:
     uint64_t tradeIdCounter_{1};
     std::unique_ptr<OrderPool<MAX_POOL_SIZE>> pool_;
@@ -218,4 +251,5 @@ private:
     DenseBook<MAX_TICKS> asks_;
     FlatHashMap<131'072> orderLookup_;
     InstrumentConfig instrumentConfig_;
+
 };
