@@ -35,7 +35,14 @@ public:
             Order order{};
             order.orderId = ++order_counter;
             order.clientId = bot_id_;
-            order.side = (rng_() % 100 < 50) ? Side::BUY : Side::SELL;
+            uint32_t buy_prob = 50;
+            if (current_price > 1030) {
+                buy_prob = 25; 
+            } else if (current_price < 970) {
+                buy_prob = 75; 
+            }
+            order.side = (rng_() % 100 < buy_prob) ? Side::BUY : Side::SELL;
+
 
             if (rng_() % 100 < 40) {
                 // 40% Market Order: quét thẳng vào sổ lệnh
