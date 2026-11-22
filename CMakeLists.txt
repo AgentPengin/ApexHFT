@@ -32,6 +32,8 @@ target_include_directories(apex_core INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include/core
     ${CMAKE_CURRENT_SOURCE_DIR}/include/engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/bot
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/ui
 )
 
 if(MSVC)

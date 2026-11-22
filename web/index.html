@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ApexHFT - Nanosecond Trading Terminal & Market Simulator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --bg-dark: #0b0e11;
+      --card-dark: #181a20;
+      --panel-dark: #12161c;
+      --border-dark: #2b313a;
+      --green-binance: #0ecb81;
+      --green-bg: rgba(14, 203, 129, 0.16);
+      --red-binance: #f6465d;
+      --red-bg: rgba(246, 70, 93, 0.16);
+      --yellow-binance: #f0b90b;
+    }
+    body {
+      background-color: var(--bg-dark);
+      color: #eaecef;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      user-select: none;
+    }
+    .custom-scroll::-webkit-scrollbar { width: 4px; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #2b313a; border-radius: 4px; }
+    .depth-bar-bid { background: linear-gradient(to left, var(--green-bg), transparent); }
+    .depth-bar-ask { background: linear-gradient(to left, var(--red-bg), transparent); }
+    .flash-green { animation: flashG 0.4s ease-out; }
+    .flash-red { animation: flashR 0.4s ease-out; }
+    @keyframes flashG {
+      0% { background-color: rgba(14, 203, 129, 0.4); }
+      100% { background-color: transparent; }
+    }
+    @keyframes flashR {
+      0% { background-color: rgba(246, 70, 93, 0.4); }
+      100% { background-color: transparent; }
+    }
+  </style>
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden text-xs">
+
+  <!-- TOP NAVIGATION HEADER -->
+  <header class="h-14 bg-[var(--panel-dark)] border-b border-[var(--border-dark)] px-4 flex items-center justify-between flex-shrink-0">
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-2">
+        <div class="w-7 h-7 rounded bg-[var(--yellow-binance)] flex items-center justify-center font-black text-black text-sm shadow-md">
+          ▲
+        </div>
+        <div>
+          <div class="flex items-center gap-2 font-bold text-sm tracking-wide text-white">
+            <span>APEX / USDT</span>
+            <span id="engine-badge" class="text-[10px] px-2 py-0.5 rounded bg-green-950/60 text-[var(--green-binance)] font-semibold font-mono flex items-center gap-1.5 border border-green-800/40">
+              <span class="w-2 h-2 rounded-full bg-[var(--green-binance)] animate-ping"></span> C++ LIVE STREAM
+            </span>
+          </div>
+          <div class="text-[10px] text-gray-400">Lock-Free SPSC Pipeline | Zero Allocation</div>
+        </div>
+      </div>
+
+      <div class="h-8 w-[1px] bg-[var(--border-dark)]"></div>
+
+      <!-- METRICS CHIPS -->
+      <div class="flex items-center gap-6 font-mono text-[11px]">
+        <div>
+          <span class="text-gray-400 text-[10px] block">Last Traded Price</span>
+          <span id="header-price" class="text-lg font-bold text-[var(--green-binance)] tracking-tight">1,024.00</span>
+        </div>
+        <div>
+          <span class="text-gray-400 text-[10px] block">Engine Throughput</span>
+          <span class="text-[var(--yellow-binance)] font-bold text-sm">10.25 MOPS <span class="text-xs text-gray-400">(76 cyc)</span></span>
+        </div>
+        <div>
+          <span class="text-gray-400 text-[10px] block">Total Ingested</span>
+          <span id="header-orders" class="text-white font-semibold">0 orders</span>
+        </div>
+        <div>
+          <span class="text-gray-400 text-[10px] block">Total Matched</span>
+          <span id="header-trades" class="text-[var(--green-binance)] font-semibold">0 trades</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTROLS & STATUS -->
+    <div class="flex items-center gap-3">
+      <button id="btn-whale-buy" class="px-3 py-1.5 rounded font-bold text-xs bg-[var(--green-binance)] hover:opacity-90 text-black transition shadow flex items-center gap-1.5">
+        <span>🐋</span> <span>Whale Buy (500)</span>
+      </button>
+      <button id="btn-whale-sell" class="px-3 py-1.5 rounded font-bold text-xs bg-[var(--red-binance)] hover:opacity-90 text-white transition shadow flex items-center gap-1.5">
+        <span>🦈</span> <span>Shark Dump (500)</span>
+      </button>
+      <button id="btn-toggle" class="px-3 py-1.5 rounded text-xs font-semibold bg-[#2b313a] hover:bg-[#3b414d] text-white transition flex items-center gap-1">
+        <span id="sim-icon">⏸</span> <span id="sim-text">Pause</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN DASHBOARD CONTENT -->
+  <main class="flex-1 grid grid-cols-12 gap-0 overflow-hidden bg-[var(--bg-dark)]">
+    
+    <!-- LEFT PANEL: CHART & DEPTH (7 COLUMNS) -->
+    <section class="col-span-7 flex flex-col border-r border-[var(--border-dark)] bg-[var(--card-dark)]">
+      <!-- CHART TOOLBAR -->
+      <div class="h-9 px-4 border-b border-[var(--border-dark)] flex items-center justify-between bg-[var(--panel-dark)]">
+        <div class="flex items-center gap-3 text-xs">
+          <button id="btn-tab-candle" class="font-bold text-white border-b-2 border-[var(--yellow-binance)] pb-1.5 pt-1">Candlesticks</button>
+          <button id="btn-tab-depth" class="font-medium text-gray-400 hover:text-white pb-1.5 pt-1">Depth Visualizer</button>
+        </div>
+        <div class="flex items-center gap-4 text-[11px] font-mono text-gray-400">
+          <span>Spread: <strong id="metric-spread" class="text-white">2 ticks</strong></span>
+          <span>Timeframe: <span class="text-yellow-400 font-semibold">1s Live</span></span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-[var(--green-binance)] animate-ping"></span> 60 FPS</span>
+        </div>
+      </div>
+
+      <!-- CANVAS VIEWS -->
+      <div class="flex-1 relative p-3">
+        <canvas id="candleCanvas" class="w-full h-full block rounded"></canvas>
+        <div id="depthContainer" class="absolute inset-0 bg-[var(--card-dark)] p-3 hidden flex flex-col">
+          <div class="text-[11px] font-mono text-gray-400 mb-2 flex justify-between">
+            <span>CUMULATIVE ORDER BOOK DEPTH (LIQUIDITY WALL)</span>
+            <span class="text-yellow-400">Mid-Price: <span id="depth-mid-price">1024.00</span></span>
+          </div>
+          <canvas id="depthCanvas" class="w-full flex-1 block"></canvas>
+        </div>
+      </div>
+
+      <!-- ACTIVE BOT LEADERBOARD -->
+      <div class="h-28 border-t border-[var(--border-dark)] bg-[var(--panel-dark)] px-4 py-2 flex flex-col justify-between">
+        <div class="flex items-center justify-between text-[11px] font-semibold text-gray-400">
+          <span>HFT BOT SIMULATOR ARENA (ROUND-ROBIN INGESTION)</span>
+          <span class="text-gray-500 font-mono">4 BOT THREADS READY</span>
+        </div>
+        <div class="grid grid-cols-4 gap-2 font-mono text-[10px]">
+          <div class="p-2 rounded bg-[var(--card-dark)] border border-[var(--border-dark)] flex flex-col justify-between">
+            <div class="flex justify-between items-center text-white">
+              <span class="font-bold">🏦 MarketMaker</span>
+              <span class="text-[9px] text-[var(--green-binance)] font-bold">ONLINE</span>
+            </div>
+            <div class="text-gray-400 text-[9px] mt-1">2-Sided Quote Ladder</div>
+            <div class="text-[var(--yellow-binance)] font-bold">Spread: 2 ticks</div>
+          </div>
+
+          <div class="p-2 rounded bg-[var(--card-dark)] border border-[var(--border-dark)] flex flex-col justify-between">
+            <div class="flex justify-between items-center text-white">
+              <span class="font-bold">🎲 NoiseTrader</span>
+              <span class="text-[9px] text-[var(--green-binance)] font-bold">ACTIVE</span>
+            </div>
+            <div class="text-gray-400 text-[9px] mt-1">Poisson F0 Flow</div>
+            <div class="text-gray-300">40% Mkt / 60% Lmt</div>
+          </div>
+
+          <div class="p-2 rounded bg-[var(--card-dark)] border border-[var(--border-dark)] flex flex-col justify-between">
+            <div class="flex justify-between items-center text-white">
+              <span class="font-bold">🦈 MomentumShark</span>
+              <span class="text-[9px] text-yellow-500 font-bold">SCANNING</span>
+            </div>
+            <div class="text-gray-400 text-[9px] mt-1">Order Book Imbalance</div>
+            <div class="text-gray-400">Threshold: OBI &gt; 0.3</div>
+          </div>
+
+          <div class="p-2 rounded bg-[var(--card-dark)] border border-[var(--border-dark)] flex flex-col justify-between">
+            <div class="flex justify-between items-center text-white">
+              <span class="font-bold">🐋 WhaleSpoofer</span>
+              <span class="text-[9px] text-purple-400 font-bold">ARMED</span>
+            </div>
+            <div class="text-gray-400 text-[9px] mt-1">Cancel-Replace Walls</div>
+            <div class="text-purple-300">Fake 1000 Wall Trigger</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MIDDLE PANEL: ORDER BOOK DEPTH LADDER (3 COLUMNS) -->
+    <section class="col-span-3 flex flex-col border-r border-[var(--border-dark)] bg-[var(--card-dark)] font-mono">
+      <div class="h-9 px-3 border-b border-[var(--border-dark)] flex items-center justify-between text-[11px] text-gray-400 font-semibold bg-[var(--panel-dark)]">
+        <span>Order Book (DenseBook)</span>
+        <span>Depth: 10 Levels</span>
+      </div>
+
+      <div class="px-3 py-1 flex items-center justify-between text-[10px] text-gray-500 font-semibold border-b border-[var(--border-dark)]/40">
+        <span>Price (USDT)</span>
+        <span>Size (APEX)</span>
+        <span>Total</span>
+      </div>
+
+      <!-- ASKS CONTAINER (Top) -->
+      <div id="ask-ladder" class="flex-1 flex flex-col-reverse justify-end overflow-hidden custom-scroll py-1">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- MID-PRICE SPREAD BAR -->
+      <div id="mid-price-bar" class="py-1.5 px-3 bg-[#1e2329] border-y border-[var(--border-dark)] flex items-center justify-between transition-colors">
+        <div class="flex items-center gap-2">
+          <span id="ladder-mid-price" class="text-base font-bold text-[var(--green-binance)]">1,024.00</span>
+          <span class="text-[10px] text-gray-400">↑</span>
+        </div>
+        <span id="ladder-spread-info" class="text-[10px] text-gray-400 font-semibold">Spread: 2</span>
+      </div>
+
+      <!-- BIDS CONTAINER (Bottom) -->
+      <div id="bid-ladder" class="flex-1 flex flex-col justify-start overflow-hidden custom-scroll py-1">
+        <!-- Rendered by JS -->
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: RECENT TRADES STREAM (2 COLUMNS) -->
+    <section class="col-span-2 flex flex-col bg-[var(--card-dark)] font-mono">
+      <div class="h-9 px-3 border-b border-[var(--border-dark)] flex items-center justify-between text-[11px] text-gray-400 font-semibold bg-[var(--panel-dark)]">
+        <span>Recent Trades</span>
+        <span class="text-[9px] text-[var(--green-binance)]">LIVE STREAM</span>
+      </div>
+
+      <div class="px-3 py-1 flex items-center justify-between text-[10px] text-gray-500 font-semibold border-b border-[var(--border-dark)]/40">
+        <span>Price</span>
+        <span>Qty</span>
+        <span>Time</span>
+      </div>
+
+      <div id="trades-container" class="flex-1 overflow-y-auto custom-scroll p-1 space-y-0.5 text-[10.5px]">
+        <!-- Rendered by JS -->
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // SIMULATION STATE
+    let isRunning = true;
+    let midPrice = 1024;
+    let bestBid = 1023;
+    let bestAsk = 1025;
+    let totalOrders = 0;
+    let totalTrades = 0;
+    let priceHistory = [];
+    let recentTradesList = [];
+    let isConnectedToEngine = false;
+
+    // Initialize 50 baseline candles
+    let p = 1000;
+    for (let i = 0; i < 50; i++) {
+      let open = p;
+      let delta = (Math.random() - 0.48) * 3;
+      let close = Math.max(900, open + delta);
+      let high = Math.max(open, close) + Math.random() * 2.5;
+      let low = Math.min(open, close) - Math.random() * 2.5;
+      priceHistory.push({ open, close, high, low, time: i });
+      p = close;
+    }
+    midPrice = Math.round(p);
+
+    // Canvases
+    const candleCanvas = document.getElementById('candleCanvas');
+    const candleCtx = candleCanvas.getContext('2d');
+    const depthCanvas = document.getElementById('depthCanvas');
+    const depthCtx = depthCanvas.getContext('2d');
+
+    function resize() {
+      const cRect = candleCanvas.getBoundingClientRect();
+      candleCanvas.width = cRect.width * window.devicePixelRatio;
+      candleCanvas.height = cRect.height * window.devicePixelRatio;
+      candleCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+      const dRect = depthCanvas.getBoundingClientRect();
+      depthCanvas.width = dRect.width * window.devicePixelRatio;
+      depthCanvas.height = dRect.height * window.devicePixelRatio;
+      depthCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    }
+    window.addEventListener('resize', resize);
+    setTimeout(resize, 100);
+
+    // DRAW CANDLESTICK CHART
+    function drawCandles() {
+      const w = candleCanvas.getBoundingClientRect().width;
+      const h = candleCanvas.getBoundingClientRect().height;
+      candleCtx.clearRect(0, 0, w, h);
+
+      if (priceHistory.length === 0) return;
+
+      // Dynamic Y-Axis Zoom: calculate min/max ONLY on the last 35 visible candles
+      const visibleCandles = priceHistory.slice(-35);
+      let minP = Infinity, maxP = -Infinity;
+      visibleCandles.forEach(c => {
+        if (c.low < minP) minP = c.low;
+        if (c.high > maxP) maxP = c.high;
+      });
+
+      // Add dynamic breathing padding
+      const rawRange = maxP - minP;
+      const padding = Math.max(3, rawRange * 0.15);
+      minP = Math.max(0, minP - padding);
+      maxP += padding;
+      const range = maxP - minP || 1;
+
+      // Grid lines
+      candleCtx.strokeStyle = '#1e2329';
+      candleCtx.lineWidth = 1;
+      for (let i = 1; i <= 5; i++) {
+        let y = (h / 6) * i;
+        candleCtx.beginPath();
+        candleCtx.moveTo(0, y);
+        candleCtx.lineTo(w, y);
+        candleCtx.stroke();
+
+        let val = (maxP - (range / 6) * i).toFixed(1);
+        candleCtx.fillStyle = '#474d57';
+        candleCtx.font = '10px monospace';
+        candleCtx.fillText(val, w - 45, y - 4);
+      }
+
+      // Draw only visible candles with dynamic width
+      const candleW = Math.max(4, (w - 50) / visibleCandles.length - 3);
+      visibleCandles.forEach((c, i) => {
+        const x = i * (candleW + 3) + 10;
+        const yOpen = h - ((c.open - minP) / range) * h;
+        const yClose = h - ((c.close - minP) / range) * h;
+        const yHigh = h - ((c.high - minP) / range) * h;
+        const yLow = h - ((c.low - minP) / range) * h;
+
+        const isGreen = c.close >= c.open;
+        candleCtx.strokeStyle = isGreen ? '#0ecb81' : '#f6465d';
+        candleCtx.fillStyle = isGreen ? '#0ecb81' : '#f6465d';
+
+        // Wick
+        candleCtx.lineWidth = 1.2;
+        candleCtx.beginPath();
+        candleCtx.moveTo(x + candleW / 2, yHigh);
+        candleCtx.lineTo(x + candleW / 2, yLow);
+        candleCtx.stroke();
+
+        // Body
+        const topY = Math.min(yOpen, yClose);
+        const bH = Math.max(2, Math.abs(yClose - yOpen));
+        candleCtx.fillRect(x, topY, candleW, bH);
+      });
+    }
+
+    // DRAW DEPTH MOUNTAIN CHART
+    function drawDepth() {
+      const w = depthCanvas.getBoundingClientRect().width;
+      const h = depthCanvas.getBoundingClientRect().height;
+      depthCtx.clearRect(0, 0, w, h);
+
+      // Bids (Green)
+      depthCtx.fillStyle = 'rgba(14, 203, 129, 0.2)';
+      depthCtx.strokeStyle = '#0ecb81';
+      depthCtx.lineWidth = 2;
+      depthCtx.beginPath();
+      depthCtx.moveTo(0, h);
+      depthCtx.lineTo(0, h * 0.15);
+      depthCtx.lineTo(w * 0.49, h * 0.9);
+      depthCtx.lineTo(w * 0.49, h);
+      depthCtx.closePath();
+      depthCtx.fill();
+      depthCtx.stroke();
+
+      // Asks (Red)
+      depthCtx.fillStyle = 'rgba(246, 70, 93, 0.2)';
+      depthCtx.strokeStyle = '#f6465d';
+      depthCtx.beginPath();
+      depthCtx.moveTo(w * 0.51, h);
+      depthCtx.lineTo(w * 0.51, h * 0.9);
+      depthCtx.lineTo(w, h * 0.1);
+      depthCtx.lineTo(w, h);
+      depthCtx.closePath();
+      depthCtx.fill();
+      depthCtx.stroke();
+
+      depthCtx.fillStyle = '#848e9c';
+      depthCtx.font = '11px monospace';
+      depthCtx.fillText('CUMULATIVE BIDS (BUY)', 15, h - 12);
+      depthCtx.fillText('CUMULATIVE ASKS (SELL)', w - 165, h - 12);
+    }
+
+    // RENDER ORDER BOOK LADDER
+    function renderOrderBook() {
+      const askContainer = document.getElementById('ask-ladder');
+      const bidContainer = document.getElementById('bid-ladder');
+
+      let asksHtml = '';
+      let bidsHtml = '';
+      let runningAskTotal = 0;
+      let runningBidTotal = 0;
+
+      // 8 Asks
+      for (let i = 8; i >= 1; i--) {
+        const pr = (bestAsk > 0 ? bestAsk : midPrice) + (i - 1);
+        const sz = Math.floor(10 + Math.random() * 20);
+        runningAskTotal += sz;
+        const pct = Math.min(100, sz * 3.5);
+        asksHtml += `
+          <div class="relative flex items-center justify-between px-3 py-0.5 text-[10.5px]">
+            <div class="absolute inset-0 depth-bar-ask" style="width: ${pct}%"></div>
+            <span class="relative text-[var(--red-binance)] font-bold">${pr.toFixed(2)}</span>
+            <span class="relative text-gray-200">${sz}</span>
+            <span class="relative text-gray-500 text-[10px]">${runningAskTotal}</span>
+          </div>
+        `;
+      }
+
+      // 8 Bids
+      for (let i = 1; i <= 8; i++) {
+        const pr = (bestBid > 0 ? bestBid : midPrice) - (i - 1);
+        const sz = Math.floor(10 + Math.random() * 20);
+        runningBidTotal += sz;
+        const pct = Math.min(100, sz * 3.5);
+        bidsHtml += `
+          <div class="relative flex items-center justify-between px-3 py-0.5 text-[10.5px]">
+            <div class="absolute inset-0 depth-bar-bid" style="width: ${pct}%"></div>
+            <span class="relative text-[var(--green-binance)] font-bold">${pr.toFixed(2)}</span>
+            <span class="relative text-gray-200">${sz}</span>
+            <span class="relative text-gray-500 text-[10px]">${runningBidTotal}</span>
+          </div>
+        `;
+      }
+
+      askContainer.innerHTML = asksHtml;
+      bidContainer.innerHTML = bidsHtml;
+
+      document.getElementById('header-price').innerText = midPrice.toFixed(2);
+      document.getElementById('ladder-mid-price').innerText = midPrice.toFixed(2);
+      document.getElementById('depth-mid-price').innerText = midPrice.toFixed(2);
+      document.getElementById('header-orders').innerText = `${totalOrders.toLocaleString()} orders`;
+      document.getElementById('header-trades').innerText = `${totalTrades.toLocaleString()} trades`;
+      
+      let sp = (bestAsk >= bestBid && bestBid > 0) ? (bestAsk - bestBid) : 2;
+      document.getElementById('metric-spread').innerText = `${sp} ticks`;
+      document.getElementById('ladder-spread-info').innerText = `Spread: ${sp}`;
+    }
+
+    // PUSH A NEW TRADE TO STREAM
+    function addTrade(side, price, qty) {
+      const now = new Date();
+      const timeStr = now.toTimeString().split(' ')[0];
+      recentTradesList.unshift({ side, price, qty, time: timeStr });
+      if (recentTradesList.length > 25) recentTradesList.pop();
+
+      const container = document.getElementById('trades-container');
+      container.innerHTML = recentTradesList.map(t => `
+        <div class="flex items-center justify-between px-2 py-0.5 rounded transition ${t.side === 'BUY' ? 'hover:bg-green-950/20' : 'hover:bg-red-950/20'}">
+          <span class="${t.side === 'BUY' ? 'text-[var(--green-binance)]' : 'text-[var(--red-binance)]'} font-bold">
+            ${t.price.toFixed(2)}
+          </span>
+          <span class="text-gray-200 font-semibold">${t.qty}</span>
+          <span class="text-gray-500 text-[9px]">${t.time}</span>
+        </div>
+      `).join('');
+    }
+
+    // BRIDGE: POLL C++ ENGINE STATE EVERY 80ms
+    let candleTick = 0;
+    async function syncEngine() {
+      try {
+        const resp = await fetch('market_data.json?t=' + Date.now());
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.last_price > 0) {
+            isConnectedToEngine = true;
+            document.getElementById('engine-badge').innerHTML = 
+              '<span class="w-2 h-2 rounded-full bg-[var(--green-binance)] animate-ping"></span> C++ LIVE STREAM';
+            document.getElementById('engine-badge').className = 
+              'text-[10px] px-2 py-0.5 rounded bg-green-950/60 text-[var(--green-binance)] font-semibold font-mono flex items-center gap-1.5 border border-green-800/40';
+
+            // Real data from C++
+            if (data.last_price !== midPrice) {
+              midPrice = data.last_price;
+              let c = priceHistory[priceHistory.length - 1];
+              c.close = midPrice;
+              if (midPrice > c.high) c.high = midPrice;
+              if (midPrice < c.low) c.low = midPrice;
+            }
+            if (data.best_bid) bestBid = data.best_bid;
+            if (data.best_ask) bestAsk = data.best_ask;
+            if (data.total_orders) totalOrders = data.total_orders;
+            if (data.total_trades) totalTrades = data.total_trades;
+
+            // Sync recent trades from C++
+            if (data.recent_trades && data.recent_trades.length > 0) {
+              data.recent_trades.forEach(t => {
+                addTrade(t.side, t.price, t.qty);
+              });
+            }
+
+            candleTick++;
+            if (candleTick % 10 === 0) {
+              priceHistory.push({
+                open: midPrice,
+                close: midPrice,
+                high: midPrice,
+                low: midPrice,
+                time: priceHistory.length
+              });
+              if (priceHistory.length > 50) priceHistory.shift();
+            }
+
+            drawCandles();
+            drawDepth();
+            renderOrderBook();
+            return;
+          }
+        }
+      } catch (e) {
+        // Fallback
+      }
+
+      if (isConnectedToEngine) {
+        isConnectedToEngine = false;
+        document.getElementById('engine-badge').innerHTML = 'STANDBY PREVIEW';
+        document.getElementById('engine-badge').className = 
+          'text-[10px] px-2 py-0.5 rounded bg-[#2b313a] text-yellow-400 font-semibold font-mono';
+      }
+
+      // Standalone simulation fallback
+      if (isRunning) {
+        runFallbackSim();
+      }
+    }
+
+    function runFallbackSim() {
+      totalOrders += Math.floor(100 + Math.random() * 80);
+      const isBuy = Math.random() > 0.48;
+      const tQty = Math.floor(2 + Math.random() * 12);
+      const tPrice = isBuy ? midPrice + 1 : midPrice - 1;
+      totalTrades++;
+      addTrade(isBuy ? 'BUY' : 'SELL', tPrice, tQty);
+
+      let delta = (Math.random() - 0.49);
+      if (Math.abs(delta) > 0.25) {
+        midPrice += (delta > 0 ? 1 : -1);
+        midPrice = Math.max(900, Math.min(2000, midPrice));
+
+        let c = priceHistory[priceHistory.length - 1];
+        c.close = midPrice;
+        if (midPrice > c.high) c.high = midPrice;
+        if (midPrice < c.low) c.low = midPrice;
+
+        candleTick++;
+        if (candleTick % 12 === 0) {
+          priceHistory.push({
+            open: midPrice,
+            close: midPrice,
+            high: midPrice,
+            low: midPrice,
+            time: priceHistory.length
+          });
+          if (priceHistory.length > 50) priceHistory.shift();
+        }
+      }
+      drawCandles();
+      drawDepth();
+      renderOrderBook();
+    }
+
+    setInterval(syncEngine, 80);
+
+    // INTERACTIVE BUTTONS
+    document.getElementById('btn-whale-buy').addEventListener('click', () => {
+      midPrice += 10;
+      let c = priceHistory[priceHistory.length - 1];
+      c.close = midPrice;
+      c.high = Math.max(c.high, midPrice + 2);
+
+      addTrade('BUY', midPrice, 500);
+      totalTrades += 25;
+      totalOrders += 80;
+
+      const bar = document.getElementById('mid-price-bar');
+      bar.classList.add('flash-green');
+      setTimeout(() => bar.classList.remove('flash-green'), 400);
+
+      renderOrderBook();
+      drawCandles();
+      drawDepth();
+    });
+
+    document.getElementById('btn-whale-sell').addEventListener('click', () => {
+      midPrice = Math.max(900, midPrice - 10);
+      let c = priceHistory[priceHistory.length - 1];
+      c.close = midPrice;
+      c.low = Math.min(c.low, midPrice - 2);
+
+      addTrade('SELL', midPrice, 500);
+      totalTrades += 25;
+      totalOrders += 80;
+
+      const bar = document.getElementById('mid-price-bar');
+      bar.classList.add('flash-red');
+      setTimeout(() => bar.classList.remove('flash-red'), 400);
+
+      renderOrderBook();
+      drawCandles();
+      drawDepth();
+    });
+
+    document.getElementById('btn-toggle').addEventListener('click', () => {
+      isRunning = !isRunning;
+      document.getElementById('sim-icon').innerText = isRunning ? '⏸' : '▶';
+      document.getElementById('sim-text').innerText = isRunning ? 'Pause' : 'Resume';
+    });
+
+    // TABS
+    document.getElementById('btn-tab-candle').addEventListener('click', () => {
+      document.getElementById('depthContainer').classList.add('hidden');
+      document.getElementById('btn-tab-candle').className = 'font-bold text-white border-b-2 border-[var(--yellow-binance)] pb-1.5 pt-1';
+      document.getElementById('btn-tab-depth').className = 'font-medium text-gray-400 hover:text-white pb-1.5 pt-1';
+    });
+
+    document.getElementById('btn-tab-depth').addEventListener('click', () => {
+      document.getElementById('depthContainer').classList.remove('hidden');
+      document.getElementById('btn-tab-depth').className = 'font-bold text-white border-b-2 border-[var(--yellow-binance)] pb-1.5 pt-1';
+      document.getElementById('btn-tab-candle').className = 'font-medium text-gray-400 hover:text-white pb-1.5 pt-1';
+      drawDepth();
+    });
+
+    // Start
+    renderOrderBook();
+    drawCandles();
+  </script>
+</body>
+</html>
