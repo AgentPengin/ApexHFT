@@ -58,6 +58,8 @@ public:
             bid.price = (mid > 1) ? mid - 1 : 1;
             bid.quantity = 10;
             bid.remainingQuantity = 10;
+
+            
             push_order(bid);
             prev_bid_id = new_bid_id;
 

@@ -15,6 +15,8 @@ struct alignas(64) MarketState {
     std::atomic<uint64_t> last_price{1000};
     std::atomic<uint64_t> total_trades{0};
     std::atomic<uint64_t> total_orders{0};
+    std::atomic<uint64_t> best_bid_volume{0};
+    std::atomic<uint64_t> best_ask_volume{0};
 
     // Circular buffer of recent trades for UI
     static constexpr size_t TRADE_BUFFER_SIZE = 16;

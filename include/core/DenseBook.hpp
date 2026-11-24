@@ -49,6 +49,10 @@ public:
         return levels_[price_to_index(price)];
     }
 
+    inline const PriceLevel& get_level(uint64_t price) const {
+        return levels_[price_to_index(price)];
+    }
+
     inline void activate_level(int64_t price) {
         set_bit(price_to_index(price));
     }

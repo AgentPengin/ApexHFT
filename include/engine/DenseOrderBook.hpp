@@ -242,6 +242,16 @@ class DenseOrderBook {
         if (!has_best_ask()) return INVALID_PRICE;
         return static_cast<uint64_t>(asks_.get_best_ask()); 
     }
+    uint64_t best_bid_volume() const {
+        if (!has_best_bid()) return 0;
+        const PriceLevel& level = bids_.get_level(static_cast<uint64_t>(bids_.get_best_bid()));
+        return level.total_volume;
+    }
+    uint64_t best_ask_volume() const {
+        if (!has_best_ask()) return 0;
+        const PriceLevel& level = asks_.get_level(static_cast<uint64_t>(asks_.get_best_ask()));
+        return level.total_volume;
+    }
     
     
 private:

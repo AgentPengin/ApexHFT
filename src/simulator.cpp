@@ -11,8 +11,10 @@
 #include "MarketMakerBot.hpp"
 #include "NoiseTraderBot.hpp"
 #include "TerminalUI.hpp"
+#include "MomentumSharkBot.hpp"
+#include "WhaleSpooferBot.hpp"
 
-constexpr size_t NUM_BOTS = 2;
+constexpr size_t NUM_BOTS = 4;
 
 std::atomic<bool> running{true};
 MarketState market_state;
@@ -54,6 +56,9 @@ void engine_worker(std::array<SPSCQueue<Order, 1024>, NUM_BOTS>& queues,
                 uint64_t ba = book.has_best_ask() ? book.get_best_ask() : 0;
                 market_state.best_bid.store(bb, std::memory_order_relaxed);
                 market_state.best_ask.store(ba, std::memory_order_relaxed);
+
+                market_state.best_bid_volume.store(book.best_bid_volume(), std::memory_order_relaxed);
+                market_state.best_ask_volume.store(book.best_ask_volume(), std::memory_order_relaxed);
 
                 ++processed;
                 market_state.total_orders.store(processed, std::memory_order_relaxed);
@@ -104,15 +109,20 @@ int main(int argc, char* argv[]) {
     std::array<SPSCQueue<Order, 1024>, NUM_BOTS> queues;
     DenseOrderBook book;
 
-    // 4 luồng đồng bộ xuất phát: engine + MM + noise + main
-    std::latch start_gate(4);
+
+    // 6 luồng đồng bộ xuất phát: engine + MM + noise + main + momentum + whale
+    std::latch start_gate(6);
 
     MarketMakerBot mm_bot(1, queues[0], market_state, running, start_gate);
     NoiseTraderBot noise_bot(2, queues[1], market_state, running, start_gate);
+    MomentumSharkBot momentum_bot(3, queues[2], market_state, running, start_gate);
+    WhaleSpooferBot whale_bot(4, queues[3], market_state, running, start_gate);
 
     std::thread engine_thread(engine_worker, std::ref(queues), std::ref(book), std::ref(market_state), std::ref(running), std::ref(start_gate));
     std::thread mm_thread(&MarketMakerBot::run, &mm_bot);
     std::thread noise_thread(&NoiseTraderBot::run, &noise_bot);
+    std::thread momentum_thread(&MomentumSharkBot::run, &momentum_bot);
+    std::thread whale_thread(&WhaleSpooferBot::run, &whale_bot);
 
     // Cùng xuất phát
     start_gate.arrive_and_wait();
@@ -133,7 +143,8 @@ int main(int argc, char* argv[]) {
     if (mm_thread.joinable()) mm_thread.join();
     if (noise_thread.joinable()) noise_thread.join();
     if (engine_thread.joinable()) engine_thread.join();
-
+    if (momentum_thread.joinable()) momentum_thread.join();
+    if (whale_thread.joinable()) whale_thread.join();
     std::cout << "\n\033[1;32m[SIMULATION COMPLETED CLEANLY]\033[0m\n";
     std::cout << "Final Best Bid: " << book.get_best_bid() << " | Final Best Ask: " << book.get_best_ask() << "\n";
     std::cout << "Total Orders: " << market_state.total_orders.load() 
